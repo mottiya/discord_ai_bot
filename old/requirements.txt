@@ -1,0 +1,12 @@
+# Обязательно
+discord.py-self==2.5.0
+python-dotenv
+beautifulsoup4
+lxml
+Pillow
+
+# Выберите то, что используете:
+# openai          # для GPT
+# anthropic       # для Claude
+google-generativeai  # для Gemini
+# httpx           # для Ollama
