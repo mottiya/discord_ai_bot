@@ -1,99 +1,101 @@
 import asyncio
 import logging
-import sys
 
-from src.ai_agent import get_model
-from src.ai_message_generator import AIMessageGenerator
+from src.ai.graph import DiscordChatMessage, create_identity_state
+from src.ai.llm_getter import setup_model
 from src.discord_client import DiscordClient
 from src.logger import setup_logging
-from src.message_generator import BaseMessageGenerator, JsonScenarioMessageGenerator
-from src.resources_manager import load_scenarios, load_system_context
-from src.settings import Settings
+from src.resources_manager import ModelPromts, load_model
+from src.settings import IdentitySettings, Settings
 
 logger = logging.getLogger(__name__)
+
+
+class IdentityNotFoundError(Exception):
+    def __init__(self, identity_id: int):
+        super().__init__(f"Identity с ID {identity_id} не найдена в конфигурации промптов")
+        self.identity_id = identity_id
+
+
+def validate_identities(settings: Settings, prompts: ModelPromts) -> None:
+    for identity in [settings.discord.identity_1, settings.discord.identity_2]:
+        if identity.id not in prompts.identities:
+            raise IdentityNotFoundError(identity.id)
+
+
+def build_identity_state(
+    identity_settings: IdentitySettings,
+    prompts: ModelPromts,
+    messages: list[DiscordChatMessage],
+    llm,
+):
+    identity = prompts.identities[identity_settings.id]
+    return create_identity_state(
+        messages=messages,
+        discord_id=identity_settings.id,
+        system_message=identity.system_message,
+        system_prompt=identity.system_prompt,
+        name=identity.name,
+        llm=llm,
+    )
 
 
 async def main():
     settings = Settings()
     setup_logging(settings)
 
-    # Выбираем генератор в зависимости от режима
-    if settings.generation_mode == "AI":
-        logger.info("Используется режим генерации: AI")
-        # Загружаем системный контекст
-        system_context = await load_system_context(settings.system_context_file)
-        # Создаем модель
-        model = await get_model(settings)
-        # Создаем AI генератор
-        message_generator: BaseMessageGenerator = AIMessageGenerator(
-            model=model,
-            system_context=system_context,
-            settings=settings,
-            identity_1_id=settings.identity_1.id,
-            identity_2_id=settings.identity_2.id,
-        )
-    else:
-        logger.info("Используется режим генерации: JSON")
-        # Загружаем сценарии
-        scenarios = await load_scenarios(settings.scenarios_file)
-        # Создаем JSON генератор
-        message_generator = JsonScenarioMessageGenerator(scenarios)
+    system_promts = await load_model(ModelPromts, settings.model_promts_file)
+    validate_identities(settings, system_promts)
 
-    # Создаем клиенты Discord
+    llm = await setup_model(settings)
+
+    messages = []
+
+    init_state1 = build_identity_state(settings.discord.identity_1, system_promts, messages, llm)
+    init_state2 = build_identity_state(settings.discord.identity_2, system_promts, messages, llm)
+
+    init_message = system_promts.identities[settings.discord.identity_1.id].init_message
+    messages.append(
+        DiscordChatMessage(
+            content=init_message,
+            author_id=init_state1.discord_id,
+            author_name=init_state1.discord_name,
+        )
+    )
+
     client1 = DiscordClient(
-        settings.identity_1.id,
-        settings.identity_1.token,
+        settings.discord.identity_1.token,
         settings.discord.channel_id,
-        settings.identity_2.id,
-        message_generator,
+        settings.discord.identity_2.id,
+        init_state1,
     )
     client2 = DiscordClient(
-        settings.identity_2.id,
-        settings.identity_2.token,
+        settings.discord.identity_2.token,
         settings.discord.channel_id,
-        settings.identity_1.id,
-        message_generator,
+        settings.discord.identity_1.id,
+        init_state2,
     )
 
     try:
-        task1 = client1.start_bot()
-        task2 = client2.start_bot()
+        client1.start()
+        client2.start()
 
-        # Ждем готовности обоих ботов
-        ready_event_1 = asyncio.Event()
-        ready_event_2 = asyncio.Event()
-
-        original_on_ready_1 = client1.on_ready
-        original_on_ready_2 = client2.on_ready
-
-        async def on_ready_wrapper_1():
-            await original_on_ready_1()
-            ready_event_1.set()
-
-        async def on_ready_wrapper_2():
-            await original_on_ready_2()
-            ready_event_2.set()
-
-        client1.on_ready = on_ready_wrapper_1
-        client2.on_ready = on_ready_wrapper_2
-
-        # Ждем готовности обоих ботов
-        await asyncio.gather(ready_event_1.wait(), ready_event_2.wait())
-
-        # Первый бот начинает диалог
-        await client1.start_conversation()
-
-        # Ждем завершения работы
-        await asyncio.wait(
-            [asyncio.create_task(client1.stop_event.wait()), asyncio.create_task(client2.stop_event.wait())],
-            return_when=asyncio.FIRST_COMPLETED,
+        await asyncio.gather(
+            client1.ready_event.wait(),
+            client2.ready_event.wait(),
         )
-        task1.cancel()
-        task2.cancel()
-        await asyncio.gather(task1, task2, return_exceptions=True)
+
+        await client1.send_msg(init_message)
+
+        await asyncio.sleep(settings.session_timeout)
+
+        await asyncio.gather(
+            client1.close(),
+            client2.close(),
+        )
     except Exception as e:
         logger.error(f"Критическая ошибка в работе приложения: {e}", exc_info=True)
-        sys.exit(1)
+        return
 
 
 if __name__ == "__main__":

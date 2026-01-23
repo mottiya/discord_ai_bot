@@ -4,14 +4,12 @@ from src.settings import Settings
 
 
 def setup_logging(settings: Settings):
-    # Настраиваем FileHandler с явным указанием кодировки UTF-8
-    file_handler = logging.FileHandler(settings.log_file, encoding='utf-8')
-    file_handler.setLevel(settings.log_level)
-    file_handler.setFormatter(logging.Formatter(settings.log_format))
+    file_handler = logging.FileHandler(settings.log_file, encoding="utf-8")
+    file_handler.setLevel(settings.log.level)
+    file_handler.setFormatter(logging.Formatter(settings.log.format))
 
-    # Настраиваем базовую конфигурацию без файла, чтобы добавить handler вручную
     logging.basicConfig(
-        level=settings.log_level,
-        format=settings.log_format,
+        level=settings.log.level,
+        format=settings.log.format,
         handlers=[file_handler],
     )

@@ -1,207 +1,148 @@
-import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
-from src.resources_manager import DayModel, ScenariosModel, load_scenarios
+from src.resources_manager import Identity, ModelPromts, load_model
 
 
 @pytest.fixture
-def valid_prompts_json(tmp_path: Path) -> Path:
-    """Создаёт временный JSON файл с валидной структурой промптов."""
+def valid_prompts_yaml(tmp_path: Path) -> Path:
     data = {
-        "scenarios": [
-            {
-                "day": 1,
-                "chatting_in_day": 3,
-                "chatting_in_session": 5,
-                "messages": [
-                    "Привет! Как дела?",
-                    "Отлично, спасибо!",
-                    "Хорошо, тогда договорились!",
-                ],
+        "identities": {
+            123456789: {
+                "name": "TestUser1",
+                "init_message": "Привет!",
+                "system_message": "Ты дружелюбный бот.",
+                "system_prompt": "Отвечай кратко.",
             },
-            {
-                "day": 2,
-                "chatting_in_day": 2,
-                "chatting_in_session": 3,
-                "messages": [
-                    "Доброе утро!",
-                    "Доброе утро! Как спалось?",
-                    "Спасибо, хорошо!",
-                ],
+            987654321: {
+                "name": "TestUser2",
+                "system_message": "Ты второй бот.",
+                "system_prompt": "Будь вежлив.",
             },
-        ]
+        }
     }
-
-    file_path = tmp_path / "test_prompts.json"
+    file_path = tmp_path / "test_prompts.yaml"
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
+        yaml.dump(data, f, allow_unicode=True)
     return file_path
 
 
 @pytest.fixture
-def invalid_prompts_json(tmp_path: Path) -> Path:
-    """Создаёт временный JSON файл с невалидной структурой."""
+def invalid_prompts_yaml(tmp_path: Path) -> Path:
     data = {
-        "scenarios": [
-            {
-                "day": "invalid",  # Должно быть int
-                "chatting_in_day": 3,
-                "chatting_in_session": 5,
-                "messages": [],
+        "identities": {
+            "invalid_id": {
+                "name": "TestUser",
+                "system_message": "Сообщение",
+                "system_prompt": "Промпт",
             }
-        ]
+        }
     }
-
-    file_path = tmp_path / "invalid_prompts.json"
+    file_path = tmp_path / "invalid_prompts.yaml"
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
+        yaml.dump(data, f, allow_unicode=True)
     return file_path
 
 
 @pytest.fixture
-def malformed_json(tmp_path: Path) -> Path:
-    """Создаёт временный файл с невалидным JSON."""
-    file_path = tmp_path / "malformed.json"
+def malformed_yaml(tmp_path: Path) -> Path:
+    file_path = tmp_path / "malformed.yaml"
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write("{ invalid json }")
-
+        f.write("{ invalid: yaml: content")
     return file_path
 
 
 @pytest.mark.asyncio
-async def test_load_prompts_success(valid_prompts_json: Path):
-    """Тест успешной загрузки валидного файла промптов."""
-    result = await load_scenarios(valid_prompts_json)
+async def test_load_model_success(valid_prompts_yaml: Path):
+    result = await load_model(ModelPromts, valid_prompts_yaml)
 
-    assert isinstance(result, ScenariosModel)
-    assert isinstance(result.scenarios, list)
-    assert len(result.scenarios) == 2
+    assert isinstance(result, ModelPromts)
+    assert len(result.identities) == 2
+    assert 123456789 in result.identities
+    assert 987654321 in result.identities
 
-    day1 = result.scenarios[0]
-    assert isinstance(day1, DayModel)
-    assert day1.day == 1
-    assert day1.chatting_in_day == 3
-    assert day1.chatting_in_session == 5
-    assert len(day1.messages) == 3
-    assert day1.messages[0] == "Привет! Как дела?"
+    identity1 = result.identities[123456789]
+    assert isinstance(identity1, Identity)
+    assert identity1.name == "TestUser1"
+    assert identity1.init_message == "Привет!"
+    assert identity1.system_message == "Ты дружелюбный бот."
 
-    day2 = result.scenarios[1]
-    assert isinstance(day2, DayModel)
-    assert day2.day == 2
-    assert day2.chatting_in_day == 2
-    assert day2.chatting_in_session == 3
+    identity2 = result.identities[987654321]
+    assert identity2.init_message is None
 
 
 @pytest.mark.asyncio
-async def test_load_prompts_file_not_found():
-    """Тест ошибки при отсутствии файла."""
-    non_existent_path = Path("/non/existent/path/prompts.json")
+async def test_load_model_file_not_found():
+    non_existent_path = Path("/non/existent/path/prompts.yaml")
 
     with pytest.raises(FileNotFoundError, match="File not found"):
-        await load_scenarios(non_existent_path)
+        await load_model(ModelPromts, non_existent_path)
 
 
 @pytest.mark.asyncio
-async def test_load_prompts_with_string_path(valid_prompts_json: Path):
-    """Тест загрузки с путём в виде строки."""
-    result = await load_scenarios(str(valid_prompts_json))
+async def test_load_model_with_string_path(valid_prompts_yaml: Path):
+    result = await load_model(ModelPromts, str(valid_prompts_yaml))
 
-    assert isinstance(result, ScenariosModel)
-    assert len(result.scenarios) == 2
+    assert isinstance(result, ModelPromts)
+    assert len(result.identities) == 2
 
 
 @pytest.mark.asyncio
-async def test_load_prompts_invalid_data(invalid_prompts_json: Path):
-    """Тест ошибки валидации при невалидных данных."""
+async def test_load_model_invalid_data(invalid_prompts_yaml: Path):
     with pytest.raises(ValidationError):
-        await load_scenarios(invalid_prompts_json)
+        await load_model(ModelPromts, invalid_prompts_yaml)
 
 
 @pytest.mark.asyncio
-async def test_load_prompts_malformed_json(malformed_json: Path):
-    """Тест ошибки при невалидном JSON."""
-    with pytest.raises((json.JSONDecodeError, ValidationError)):
-        await load_scenarios(malformed_json)
+async def test_load_model_malformed_yaml(malformed_yaml: Path):
+    with pytest.raises((yaml.YAMLError, ValidationError)):
+        await load_model(ModelPromts, malformed_yaml)
 
 
 @pytest.mark.asyncio
-async def test_load_prompts_empty_file(tmp_path: Path):
-    """Тест ошибки при пустом файле."""
-    empty_file = tmp_path / "empty.json"
+async def test_load_model_empty_file(tmp_path: Path):
+    empty_file = tmp_path / "empty.yaml"
     empty_file.touch()
 
-    with pytest.raises((json.JSONDecodeError, ValidationError)):
-        await load_scenarios(empty_file)
+    with pytest.raises((ValidationError, AttributeError)):
+        await load_model(ModelPromts, empty_file)
 
 
-@pytest.mark.asyncio
-async def test_day_model_validation():
-    """Тест валидации модели DayModel."""
-    valid_day = DayModel(
-        day=1,
-        chatting_in_day=3,
-        chatting_in_session=5,
-        messages=["Сообщение 1", "Сообщение 2"],
+def test_identy_model_validation():
+    valid_identity = Identity(
+        name="TestUser",
+        system_message="Сообщение",
+        system_prompt="Промпт",
     )
 
-    assert valid_day.day == 1
-    assert valid_day.chatting_in_day == 3
-    assert valid_day.chatting_in_session == 5
-    assert len(valid_day.messages) == 2
+    assert valid_identity.name == "TestUser"
+    assert valid_identity.init_message is None
 
     with pytest.raises(ValidationError):
-        DayModel(
-            day="invalid",
-            chatting_in_day=3,
-            chatting_in_session=5,
-            messages=[],
+        Identity(
+            name="TestUser",
+            system_prompt="Промпт",
         )
 
 
-@pytest.mark.asyncio
-async def test_scenarios_model_validation():
-    """Тест валидации модели ScenariosModel."""
-    day1 = DayModel(
-        day=1,
-        chatting_in_day=3,
-        chatting_in_session=5,
-        messages=["Сообщение 1"],
+def test_model_promts_validation():
+    identity1 = Identity(
+        name="User1",
+        system_message="Сообщение 1",
+        system_prompt="Промпт 1",
+    )
+    identity2 = Identity(
+        name="User2",
+        init_message="Привет!",
+        system_message="Сообщение 2",
+        system_prompt="Промпт 2",
     )
 
-    day2 = DayModel(
-        day=2,
-        chatting_in_day=2,
-        chatting_in_session=3,
-        messages=["Сообщение 2"],
-    )
+    promts = ModelPromts(identities={123: identity1, 456: identity2})
 
-    scenarios = ScenariosModel(scenarios=[day1, day2])
-
-    assert len(scenarios.scenarios) == 2
-    assert scenarios.scenarios[0].day == 1
-    assert scenarios.scenarios[1].day == 2
-
-
-@pytest.mark.asyncio
-async def test_load_real_prompts_file():
-    """Тест загрузки реального файла resources/promts.json."""
-    real_file = Path("resources/promts.json")
-
-    if not real_file.exists():
-        pytest.skip("Real prompts file not found")
-
-    result = await load_scenarios(real_file)
-
-    assert isinstance(result, ScenariosModel)
-    assert len(result.scenarios) >= 1
-
-    first_day = result.scenarios[0]
-    assert first_day.day == 1
-    assert first_day.chatting_in_day == 3
-    assert first_day.chatting_in_session == 5
-    assert len(first_day.messages) > 0
+    assert len(promts.identities) == 2
+    assert promts.identities[123].name == "User1"
+    assert promts.identities[456].init_message == "Привет!"
